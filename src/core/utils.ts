@@ -34,8 +34,8 @@ export function mapValues<T, U>(
   return result
 }
 
-export function zip<T>(a: readonly T[], b: readonly T[]): [T, T][] {
-  const result: [T, T][] = []
+export function zip<T, U>(a: readonly T[], b: readonly U[]): [T, U][] {
+  const result: [T, U][] = []
   const length = Math.min(a.length, b.length)
   for (let i = 0; i < length; i++) {
     result.push([a[i]!, b[i]!])

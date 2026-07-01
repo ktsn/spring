@@ -140,26 +140,6 @@ export function parseStyleValue(value: string): ParsedStyleValue {
   )
 }
 
-/**
- * If `target` has a value of 0 without unit, the unit is completed with the unit of the same position in `context`.
- */
-export function completeParsedStyleUnit(
-  target: ParsedStyleValue,
-  context: StyleTemplate,
-): ParsedStyleValue {
-  const completed = target.units.map((unit, i) => {
-    if (!unit && target.values[i] === 0) {
-      return context.units[i] ?? ''
-    }
-    return unit
-  })
-
-  return {
-    ...target,
-    units: completed,
-  }
-}
-
 export function interpolateParsedStyle(
   template: StyleTemplate,
   values: (string | number)[],
