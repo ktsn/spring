@@ -55,7 +55,7 @@
     "typescript": "6.0.3",
     "vite-plus": "catalog:",
     "vue": "3.5.39",
-    "vue-tsc": "3.3.5"
+    "vue-tsc": "3.3.6"
   },
   "peerDependencies": {
     "vue": "^3.0.0"
