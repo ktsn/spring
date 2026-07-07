@@ -1,3 +1,9 @@
+# [1.0.0-beta.4](https://github.com/ktsn/spring/compare/v1.0.0-beta.3...v1.0.0-beta.4) (2026-07-07)
+
+### Features
+
+* resolve sizing keywords (auto, min-content, etc.) in animation values ([#145](https://github.com/ktsn/spring/issues/145)) ([7767d3a](https://github.com/ktsn/spring/commit/7767d3aa4a622bb0220cfb4cef5c446cae5884cf))
+
 # [1.0.0-beta.3](https://github.com/ktsn/spring/compare/v1.0.0-beta.2...v1.0.0-beta.3) (2026-07-01)
 
 ### Features
