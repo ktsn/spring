@@ -1,11 +1,6 @@
 import { describe, expect, test } from 'vite-plus/test'
 
-import {
-  completeParsedStyleUnit,
-  interpolateParsedStyle,
-  joinStyleValues,
-  parseStyleValue,
-} from '../../src/core/style'
+import { interpolateParsedStyle, joinStyleValues, parseStyleValue } from '../../src/core/style'
 
 describe('parseStyleValue', () => {
   test('parse number with unit', () => {
@@ -181,50 +176,6 @@ describe('parseStyleValue', () => {
         wraps: ['', ''],
       })
     })
-  })
-})
-
-describe('completeParsedStyleUnit', () => {
-  const properties = [
-    {
-      name: '0 -> 0px',
-      value: {
-        values: [0],
-        units: [''],
-        wraps: ['', ''],
-      },
-      context: {
-        units: ['px'],
-        wraps: ['', ''],
-      },
-      expected: {
-        values: [0],
-        units: ['px'],
-        wraps: ['', ''],
-      },
-    },
-    {
-      name: 'not completed',
-      value: {
-        values: [0, 10],
-        units: ['', ''],
-        wraps: ['', ', ', ''],
-      },
-      context: {
-        units: ['', '%'],
-        wraps: ['', '', ''],
-      },
-      expected: {
-        values: [0, 10],
-        units: ['', ''],
-        wraps: ['', ', ', ''],
-      },
-    },
-  ]
-
-  test.each(properties)('$name', ({ value, context, expected }) => {
-    const actual = completeParsedStyleUnit(value, context)
-    expect(actual).toEqual(expected)
   })
 })
 

@@ -1,3 +1,4 @@
+import { normalizeAnimationStyles } from './normalizer/'
 import {
   generateSpringExpressionStyle,
   createSpring,
@@ -9,23 +10,15 @@ import {
   SpringComputed,
   SpringStyleValue,
   attachSpringValue,
-  liftToSpringStyle,
-  snapshotSpringStyle,
+  createSpringValue,
 } from './spring-value'
-import {
-  ParsedStyleValue,
-  completeParsedStyleUnit,
-  interpolateParsedStyle,
-  parseStyleValue,
-} from './style'
+import { ParsedStyleValue, StyleTemplate, interpolateParsedStyle } from './style'
 import { registerPropertyIfNeeded, t, wait } from './time'
 import {
-  clearStyle,
   isCssLinearTimingFunctionSupported,
   isCssMathAnimationSupported,
   isWebAnimationsApiSupported,
   mapValues,
-  readStyle,
   writeStyle,
   zip,
 } from './utils'
@@ -50,57 +43,69 @@ export interface AnimateContext {
   stoppedDuration: number | undefined
 }
 
+/**
+ * A single numeric slot of an animated property: the normalized endpoint
+ * values, the initial velocity and the live spring values that follow this
+ * slot's animation.
+ */
+interface AnimatedSlot {
+  from: number
+  to: number
+  velocity: number
+
+  /**
+   * The live value this slot renders through — the user-provided `to`-side
+   * SpringValue, or a constant wrapper around the normalized `to` value.
+   */
+  springValue: SpringComputed
+
+  /**
+   * A distinct SpringValue the user passed to `from`. It is attached to the
+   * same animation as `springValue` so both follow the same motion.
+   */
+  fromSpringValue: SpringComputed | undefined
+}
+
+/**
+ * Everything needed to animate one CSS property.
+ */
+type PropertyAnimation = PropertyAnimationAnimatable | PropertyAnimationNonAnimatable
+
+interface PropertyAnimationAnimatable {
+  animatable: true
+
+  /**
+   * Wraps and resolved units of the `to` side. Drives all interpolation,
+   * and `units[i]` is the unit slot `i` is actually rendered in.
+   */
+  template: StyleTemplate
+
+  /** Static `from` string for the starting keyframe. */
+  fromString: string
+
+  slots: AnimatedSlot[]
+}
+
+/**
+ * The `from` and `to` structures don't match, so the property cannot
+ * be animated and snaps to the static `to` string instead.
+ */
+interface PropertyAnimationNonAnimatable {
+  animatable: false
+  value: string
+}
+
 export function animate<
   From extends Record<string, AnimateValue | null | undefined>,
   To extends Record<string, AnimateValue | null | undefined>,
 >(target: AnimationTarget, fromTo: [To] | [From, To], options: SpringOptions = {}): AnimateContext {
   const [rawFrom, rawTo] = fromTo.length === 1 ? [{} as From, fromTo[0]] : fromTo
-  const { fromInput, toInput } = resolveMissingEntries(target, rawFrom, rawTo)
 
-  // Each slot — whether the user passed a SpringValue or a plain number —
-  // is routed through a `SpringComputed`. Numeric slots get a fresh wrapper
-  // so the rest of the evaluation pipeline is uniform.
-  const slots: Record<string, SpringComputed[]> = {}
+  const normalizedFromTo = normalizeAnimationStyles(target, rawFrom, rawTo)
 
-  // Mirror of `slots` for the `from` side. When the user passes a
-  // SpringValue to `from`, this lets us attach it to the same Attachment
-  // as the `to` slot so both follow the same animation.
-  const fromSlots: Record<string, SpringComputed[]> = {}
-
-  const slotVelocities: Record<string, number[]> = {}
-
-  const parsedFromTo = mapValues(toInput, (to, key) => {
-    const from = fromInput[key]!
-    const fromIsUserSpring = typeof from === 'object'
-    const toIsUserSpring = typeof to === 'object'
-
-    const liftedFrom: SpringStyleValue = fromIsUserSpring
-      ? from
-      : liftToSpringStyle(parseStyleValue(String(from)))
-    const liftedTo: SpringStyleValue = toIsUserSpring
-      ? to
-      : liftToSpringStyle(parseStyleValue(String(to)))
-
-    slots[key] = liftedTo.values
-    fromSlots[key] = liftedFrom.values
-
-    // Choose initial velocity prioritized by follows:
-    // 1. user-provided `from` SpringValue's velocity
-    // 2. user-provided `to` SpringValue's velocity
-    slotVelocities[key] = liftedTo.values.map((toSlot, i) => {
-      const fromSlot = liftedFrom.values[i]
-      if (fromIsUserSpring && fromSlot) return fromSlot.velocity()
-      if (toIsUserSpring) return toSlot.velocity()
-      return 0
-    })
-
-    return [snapshotSpringStyle(liftedFrom), snapshotSpringStyle(liftedTo)] as [
-      ParsedStyleValue,
-      ParsedStyleValue,
-    ]
-  })
-
-  const resolvedFromTo = resolveUnitMismatches(target, parsedFromTo)
+  const props: Record<string, PropertyAnimation> = mapValues(normalizedFromTo, ([from, to], key) =>
+    buildPropertyAnimation(from, to, rawFrom[key], rawTo[key]),
+  )
 
   const duration = options.duration ?? 1000
   const bounce = options.bounce ?? 0
@@ -110,10 +115,12 @@ export function animate<
     duration,
   })
 
-  const inputValues = groupInputValues(resolvedFromTo, slotVelocities)
+  const settlingDurationList = Object.values(props).flatMap((prop) => {
+    if (!prop.animatable) {
+      return []
+    }
 
-  const settlingDurationList = Object.values(inputValues).flatMap((values) => {
-    return values.map(({ from, to, velocity }) => {
+    return prop.slots.map(({ from, to, velocity }) => {
       return springSettlingDuration(spring, {
         from,
         to,
@@ -122,7 +129,7 @@ export function animate<
     })
   })
 
-  const settlingDuration = Math.max(...settlingDurationList)
+  const settlingDuration = settlingDurationList.length === 0 ? 0 : Math.max(...settlingDurationList)
 
   const startTime = performance.now()
 
@@ -130,55 +137,45 @@ export function animate<
 
   const ctx = createContext({
     target,
-    slots,
-    fromTo: resolvedFromTo,
+    props,
     startTime,
     duration,
     settlingDuration,
     animations,
   })
 
-  // Attach animation info to every slot's SpringComputed.
-  for (const key in slots) {
-    const [from, to] = resolvedFromTo[key]!
-    // The unit each slot is actually rendered in.
-    // so a captured live value can be tagged with its resolved unit.
-    const renderUnits = completeParsedStyleUnit(to, from).units
+  // Attach animation info to every slot's spring values.
+  for (const prop of Object.values(props)) {
+    if (!prop.animatable) {
+      continue
+    }
 
-    slots[key]!.forEach((slot, slotIndex) => {
-      const v = inputValues[key]?.[slotIndex]
-      if (!v) return
+    prop.slots.forEach((slot, slotIndex) => {
       const attachment = {
         spring,
-        from: v.from,
-        to: v.to,
-        initialVelocity: v.velocity,
+        from: slot.from,
+        to: slot.to,
+        initialVelocity: slot.velocity,
         startTime,
         duration,
         ctx,
-        unit: renderUnits[slotIndex] ?? '',
+        unit: prop.template.units[slotIndex] ?? '',
       }
-      attachSpringValue(slot, attachment)
-      const fromSlot = fromSlots[key]?.[slotIndex]
-      if (fromSlot && fromSlot !== slot) {
-        attachSpringValue(fromSlot, attachment)
+      attachSpringValue(slot.springValue, attachment)
+      if (slot.fromSpringValue) {
+        attachSpringValue(slot.fromSpringValue, attachment)
       }
     })
   }
 
   const waapi = isWebAnimationsApiSupported()
 
-  if (
-    waapi &&
-    isCssLinearTimingFunctionSupported() &&
-    canUseLinearTimingFunction(resolvedFromTo, slotVelocities)
-  ) {
+  if (waapi && isCssLinearTimingFunctionSupported() && canUseLinearTimingFunction(props)) {
     animations.push(
       ...animateWithPerPropertyEasing({
         target,
         spring,
-        fromTo: resolvedFromTo,
-        inputValues,
+        props,
         settlingDuration,
       }),
     )
@@ -187,8 +184,7 @@ export function animate<
       ...animateWithProxyTimeVariable({
         target,
         spring,
-        fromTo: resolvedFromTo,
-        inputValues,
+        props,
         duration,
         settlingDuration,
       }),
@@ -197,8 +193,7 @@ export function animate<
     // Graceful degradation for environments without WAAPI / linear() / CSS math.
     animateWithRaf({
       target,
-      fromTo: resolvedFromTo,
-      slots,
+      props,
       ctx,
     })
   }
@@ -206,25 +201,63 @@ export function animate<
   return ctx
 }
 
-interface InputValueGroup {
-  from: number
-  to: number
-  velocity: number
+/**
+ * Combine a normalized `[from, to]` pair with the raw user input for the same
+ * key into a `PropertyAnimation`. The raw values provide the user-passed
+ * SpringValues (to attach and to read initial velocities from); slots without
+ * one get a constant wrapper around the normalized value.
+ *
+ * Relies on `normalizeAnimationStyles` keeping the slot count and order of
+ * each provided side, so raw SpringValues can be associated by index.
+ */
+function buildPropertyAnimation(
+  from: ParsedStyleValue,
+  to: ParsedStyleValue,
+  rawFrom: AnimateValue | null | undefined,
+  rawTo: AnimateValue | null | undefined,
+): PropertyAnimation {
+  if (from.values.length !== to.values.length) {
+    return {
+      animatable: false,
+      value: interpolateParsedStyle(to, to.values),
+    }
+  }
+
+  const fromSprings = userSpringSlots(rawFrom)
+  const toSprings = userSpringSlots(rawTo)
+
+  const slots = zip(from.values, to.values).map(([fromValue, toValue], i): AnimatedSlot => {
+    const fromSpring = fromSprings?.[i]
+    const toSpring = toSprings?.[i]
+    const springValue = toSpring ?? createSpringValue(() => toValue)
+
+    // Choose initial velocity prioritized by follows:
+    // 1. user-provided `from` SpringValue's velocity
+    // 2. user-provided `to` SpringValue's velocity
+    const velocity = fromSpring?.velocity() ?? toSpring?.velocity() ?? 0
+
+    return {
+      from: fromValue,
+      to: toValue,
+      velocity,
+      springValue,
+      fromSpringValue: fromSpring === springValue ? undefined : fromSpring,
+    }
+  })
+
+  return {
+    animatable: true,
+    template: {
+      wraps: to.wraps,
+      units: to.units,
+    },
+    fromString: interpolateParsedStyle(from, from.values),
+    slots,
+  }
 }
 
-function groupInputValues<FromTo extends Record<string, [ParsedStyleValue, ParsedStyleValue]>>(
-  fromTo: FromTo,
-  velocity: Record<keyof FromTo, number[]>,
-): Record<keyof FromTo, InputValueGroup[]> {
-  return mapValues(fromTo, ([from, to], key) => {
-    return zip(from.values, to.values).map(([from, to], i) => {
-      return {
-        from,
-        to,
-        velocity: velocity[key]?.[i] ?? 0,
-      }
-    })
-  })
+function userSpringSlots(raw: AnimateValue | null | undefined): SpringComputed[] | undefined {
+  return raw !== null && typeof raw === 'object' ? raw.values : undefined
 }
 
 /**
@@ -233,69 +266,58 @@ function groupInputValues<FromTo extends Record<string, [ParsedStyleValue, Parse
  * - All the velocities in the same property are zero or
  * - Only one value will be animated in the same property.
  */
-function canUseLinearTimingFunction(
-  fromTo: Record<string, [ParsedStyleValue, ParsedStyleValue]>,
-  velocity: Record<string, number[]>,
-): boolean {
-  return Object.keys(fromTo).every((key) => {
-    const [from, to] = fromTo[key]!
-    const velocities = velocity[key]
-
-    if (!velocities || velocities.every((v) => v === 0)) {
+function canUseLinearTimingFunction(props: Record<string, PropertyAnimation>): boolean {
+  return Object.values(props).every((prop) => {
+    if (!prop.animatable) {
       return true
     }
 
-    const animatedValues = zip(from.values, to.values).filter(([from, to]) => {
-      return from !== to
-    })
-    if (animatedValues.length <= 1) {
+    if (prop.slots.every((slot) => slot.velocity === 0)) {
       return true
     }
 
-    return false
+    return prop.slots.filter((slot) => slot.from !== slot.to).length <= 1
   })
 }
 
 function animateWithPerPropertyEasing({
   target,
   spring,
-  fromTo,
-  inputValues,
+  props,
   settlingDuration,
 }: {
   target: AnimationTarget
   spring: Spring
-  fromTo: Record<string, [ParsedStyleValue, ParsedStyleValue]>
-  inputValues: Record<string, InputValueGroup[]>
+  props: Record<string, PropertyAnimation>
   settlingDuration: number
 }): Animation[] {
   const animations: Animation[] = []
 
-  for (const key of Object.keys(fromTo)) {
-    const [from, to] = fromTo[key]!
-
-    if (from.values.length !== to.values.length) {
-      // Skip animation if the value is not consistent
-      writeStyle(target, key, interpolateParsedStyle(to, to.values))
+  for (const [key, prop] of Object.entries(props)) {
+    if (!prop.animatable) {
+      writeStyle(target, key, prop.value)
       continue
     }
 
-    const completedTo = completeParsedStyleUnit(to, from)
-    const fromStr = interpolateParsedStyle(from, from.values)
-    const toStr = interpolateParsedStyle(completedTo, completedTo.values)
+    const toStr = interpolateParsedStyle(
+      prop.template,
+      prop.slots.map((slot) => slot.to),
+    )
 
-    const values = inputValues[key]!
-    const normalizedVelocity = values.reduce<number | undefined>((acc, { from, to, velocity }) => {
-      if (acc !== undefined) {
-        return acc
-      }
+    const normalizedVelocity = prop.slots.reduce<number | undefined>(
+      (acc, { from, to, velocity }) => {
+        if (acc !== undefined) {
+          return acc
+        }
 
-      if (from === to) {
-        return undefined
-      }
+        if (from === to) {
+          return undefined
+        }
 
-      return velocity / (to - from)
-    }, undefined)
+        return velocity / (to - from)
+      },
+      undefined,
+    )
 
     const easing = springEasingFn({
       spring,
@@ -303,7 +325,7 @@ function animateWithPerPropertyEasing({
       normalizedVelocity: normalizedVelocity ?? 0,
     })
 
-    const a = target.animate([keyframeFor(key, fromStr), keyframeFor(key, toStr)], {
+    const a = target.animate([keyframeFor(key, prop.fromString), keyframeFor(key, toStr)], {
       duration: settlingDuration,
       easing,
       fill: 'forwards',
@@ -317,38 +339,32 @@ function animateWithPerPropertyEasing({
 function animateWithProxyTimeVariable({
   target,
   spring,
-  fromTo,
-  inputValues,
+  props,
   duration,
   settlingDuration,
 }: {
   target: AnimationTarget
   spring: Spring
-  fromTo: Record<string, [ParsedStyleValue, ParsedStyleValue]>
-  inputValues: Record<string, InputValueGroup[]>
+  props: Record<string, PropertyAnimation>
   duration: number
   settlingDuration: number
 }): Animation[] {
   registerPropertyIfNeeded()
 
-  for (const key of Object.keys(fromTo)) {
-    const [from, to] = fromTo[key]!
-
-    if (from.values.length !== to.values.length) {
-      writeStyle(target, key, interpolateParsedStyle(to, to.values))
+  for (const [key, prop] of Object.entries(props)) {
+    if (!prop.animatable) {
+      writeStyle(target, key, prop.value)
       continue
     }
 
-    const values = inputValues[key]!
-    const exprValues = values.map(({ from, to, velocity }) =>
+    const exprValues = prop.slots.map(({ from, to, velocity }) =>
       generateSpringExpressionStyle(spring, {
         from,
         to,
         initialVelocity: velocity,
       }),
     )
-    const completedTo = completeParsedStyleUnit(to, from)
-    writeStyle(target, key, interpolateParsedStyle(completedTo, exprValues))
+    writeStyle(target, key, interpolateParsedStyle(prop.template, exprValues))
   }
 
   target.style.setProperty(t, '0')
@@ -363,33 +379,34 @@ function animateWithProxyTimeVariable({
 
 function animateWithRaf({
   target,
-  fromTo,
-  slots,
+  props,
   ctx,
 }: {
   target: AnimationTarget
-  fromTo: Record<string, [ParsedStyleValue, ParsedStyleValue]>
-  slots: Record<string, SpringComputed[]>
+  props: Record<string, PropertyAnimation>
   ctx: AnimateContext
 }): void {
+  // Non-animatable properties snap once, outside the render loop.
+  for (const key in props) {
+    const prop = props[key]!
+    if (!prop.animatable) {
+      writeStyle(target, key, prop.value)
+    }
+  }
+
   function render(): void {
     if (ctx.settled) {
       return
     }
 
-    for (const key in fromTo) {
-      const [from, to] = fromTo[key]!
-      const keySlots = slots[key]
-      if (!keySlots) continue
-
-      if (from.values.length !== to.values.length) {
-        writeStyle(target, key, interpolateParsedStyle(to, to.values))
+    for (const key in props) {
+      const prop = props[key]!
+      if (!prop.animatable) {
         continue
       }
 
-      const completedTo = completeParsedStyleUnit(to, from)
-      const realValue = keySlots.map((s) => s.current())
-      writeStyle(target, key, interpolateParsedStyle(completedTo, realValue))
+      const realValue = prop.slots.map((slot) => slot.springValue.current())
+      writeStyle(target, key, interpolateParsedStyle(prop.template, realValue))
     }
 
     requestAnimationFrame(render)
@@ -398,18 +415,16 @@ function animateWithRaf({
   render()
 }
 
-function createContext<FromTo extends Record<string, [ParsedStyleValue, ParsedStyleValue]>>({
+function createContext({
   target,
-  slots,
-  fromTo,
+  props,
   startTime,
   duration,
   settlingDuration,
   animations,
 }: {
   target: AnimationTarget
-  slots: Record<keyof FromTo, SpringComputed[]>
-  fromTo: FromTo
+  props: Record<string, PropertyAnimation>
   startTime: number
   duration: number
   settlingDuration: number
@@ -439,14 +454,15 @@ function createContext<FromTo extends Record<string, [ParsedStyleValue, ParsedSt
   }
 
   function setRealStyle() {
-    for (const key in fromTo) {
-      const [from, to] = fromTo[key]!
-      const keySlots = slots[key]
-      if (!keySlots) continue
+    for (const key in props) {
+      const prop = props[key]!
+      if (!prop.animatable) {
+        writeStyle(target, key, prop.value)
+        continue
+      }
 
-      const completedTo = completeParsedStyleUnit(to, from)
-      const realValue = keySlots.map((s) => s.current())
-      writeStyle(target, key, interpolateParsedStyle(completedTo, realValue))
+      const realValue = prop.slots.map((slot) => slot.springValue.current())
+      writeStyle(target, key, interpolateParsedStyle(prop.template, realValue))
     }
     target.style.removeProperty(t)
   }
@@ -477,174 +493,4 @@ function createContext<FromTo extends Record<string, [ParsedStyleValue, ParsedSt
 
 function keyframeFor(key: string, value: string): Keyframe {
   return { [key]: value } as Keyframe
-}
-
-/**
- * Return the keys that exist (non-null) in `a` but are missing (null /
- * undefined / absent) in `b`.
- */
-function diffKeys<T>(
-  a: Record<string, T | null | undefined>,
-  b: Record<string, T | null | undefined>,
-): string[] {
-  return Object.keys(a).filter((k) => a[k] != null && b[k] == null)
-}
-
-/**
- * Temporarily clear the inline styles for `keys` on `target`, run `callback`,
- * then restore the original inline values. The callback receives the live
- * `CSSStyleDeclaration` so it can read computed values that no longer reflect
- * the inline overrides.
- */
-function withClearedInlineStyles(
-  target: AnimationTarget,
-  keys: string[],
-  callback: (computed: CSSStyleDeclaration) => void,
-): void {
-  const savedInline = keys.map((k) => [k, readStyle(target.style, k)] as const)
-
-  for (const key of keys) {
-    clearStyle(target, key)
-  }
-
-  callback(getComputedStyle(target))
-
-  for (const [key, value] of savedInline) {
-    if (value !== '') {
-      writeStyle(target, key, value)
-    }
-  }
-}
-
-/**
- * Fill in entries that are missing from one side of `[from, to]` by reading
- * the element's computed style with the inline override for that property
- * temporarily cleared, then restored.
- *
- * A key is treated as "missing" when it is absent from the object OR present
- * with a `null` / `undefined` value. Applies to both directions.
- */
-function resolveMissingEntries(
-  target: AnimationTarget,
-  rawFrom: Record<string, AnimateValue | null | undefined>,
-  rawTo: Record<string, AnimateValue | null | undefined>,
-): {
-  fromInput: Record<string, AnimateValue>
-  toInput: Record<string, AnimateValue>
-} {
-  const fromInput: Record<string, AnimateValue> = {}
-  const toInput: Record<string, AnimateValue> = {}
-  for (const key in rawFrom) {
-    if (rawFrom[key] != null) fromInput[key] = rawFrom[key]!
-  }
-  for (const key in rawTo) {
-    if (rawTo[key] != null) toInput[key] = rawTo[key]!
-  }
-
-  const missingFromKeys = diffKeys(rawTo, rawFrom)
-  const missingToKeys = diffKeys(rawFrom, rawTo)
-  const missingKeys = [...missingFromKeys, ...missingToKeys]
-  if (missingKeys.length === 0) {
-    return { fromInput, toInput }
-  }
-
-  withClearedInlineStyles(target, missingKeys, (computed) => {
-    for (const key of missingFromKeys) {
-      fromInput[key] = readStyle(computed, key)
-    }
-    for (const key of missingToKeys) {
-      toInput[key] = readStyle(computed, key)
-    }
-  })
-
-  return { fromInput, toInput }
-}
-
-/**
- * For every slot where `from`/`to` mix `px` with another non-empty length unit,
- * resolve the non-px side to a px value by writing a probe with the side's
- * original `<value><unit>` per slot, reading the post-resolution string from
- * `getComputedStyle`, and re-parsing. A slot is left unchanged if the resolved
- * string doesn't share the same `wraps` structure and only `px` / empty units
- * in the expected places — this is what filters out `transform` (matrix
- * expansion), shorthand expansion, keyword residue, `%`-retaining contexts, and
- * custom properties.
- *
- * Returns a new map with the resolved `from`/`to` pairs; the input is left
- * untouched.
- */
-function resolveUnitMismatches(
-  target: AnimationTarget,
-  parsedFromTo: Record<string, [ParsedStyleValue, ParsedStyleValue]>,
-): Record<string, [ParsedStyleValue, ParsedStyleValue]> {
-  return mapValues(parsedFromTo, ([from, to], key): [ParsedStyleValue, ParsedStyleValue] => {
-    if (from.values.length !== to.values.length) return [from, to]
-
-    const fromIndices: number[] = []
-    const toIndices: number[] = []
-
-    // Record value indices that needs value completion.
-    zip(from.units, to.units).forEach(([fu, tu], i) => {
-      if (fu === tu) return
-
-      if (fu === 'px') {
-        toIndices.push(i)
-      } else if (tu === 'px') {
-        fromIndices.push(i)
-      }
-    })
-
-    if (fromIndices.length === 0 && toIndices.length === 0) return [from, to]
-
-    const resolvedFrom =
-      fromIndices.length > 0 ? resolveSide(target, key, from, fromIndices) : undefined
-    const resolvedTo = toIndices.length > 0 ? resolveSide(target, key, to, toIndices) : undefined
-
-    return [resolvedFrom ?? from, resolvedTo ?? to]
-  })
-}
-
-function resolveSide(
-  target: AnimationTarget,
-  key: string,
-  source: ParsedStyleValue,
-  indices: number[],
-): ParsedStyleValue | undefined {
-  const idxSet = new Set(indices)
-  const probe = interpolateParsedStyle(source, source.values)
-
-  // Write the probe and read computed style, then write the original style back.
-  const savedInline = readStyle(target.style, key)
-  writeStyle(target, key, probe)
-  const computedStr = readStyle(getComputedStyle(target), key)
-  if (savedInline === '') {
-    clearStyle(target, key)
-  } else {
-    writeStyle(target, key, savedInline)
-  }
-
-  const resolved = parseStyleValue(computedStr)
-
-  // Compare the structures between resolved and source style value.
-  // Do not complete if the structures are mismatched.
-  if (resolved.values.length !== source.values.length) return undefined
-  if (resolved.wraps.length !== source.wraps.length) return undefined
-  const sameWraps = zip(resolved.wraps, source.wraps).every(([rw, sw]) => rw === sw)
-  if (!sameWraps) {
-    return undefined
-  }
-
-  // Check resolved unit. Do not complete if the target slot's units are not px.
-  const resolvedAsPx = resolved.units.every((u, i) => !idxSet.has(i) || u === 'px')
-  if (!resolvedAsPx) {
-    return undefined
-  }
-
-  const newValues = source.values.slice()
-  const newUnits = source.units.slice()
-  for (const i of indices) {
-    newValues[i] = resolved.values[i]!
-    newUnits[i] = 'px'
-  }
-  return { wraps: source.wraps, units: newUnits, values: newValues }
 }
