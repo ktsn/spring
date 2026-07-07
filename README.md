@@ -87,6 +87,60 @@ This is because the library parses the numbers in the style value, then calculat
 </template>
 ```
 
+## Style Value Normalization
+
+Before starting an animation, the library normalizes the `from` and `to` styles of each property so that both sides become interpolatable numbers. The following resolutions are applied to the input styles.
+
+### Missing Entry Resolution
+
+When a property is specified on only one side, the other side is resolved from the element's computed style. The inline style for that property is temporarily cleared during the resolution, so the value declared in style sheets is used rather than the inline value set by a previous animation.
+
+```ts
+// `from` is not specified: the animation starts from the current computed width.
+animate(el, [{ width: '300px' }])
+```
+
+An entry whose value is explicitly `null` (or `undefined`) is also treated as missing:
+
+```ts
+// `height` in `from` is null: `width` starts from 100px while `height`
+// starts from the current computed height.
+animate(el, [
+  { width: '100px', height: null },
+  { width: '300px', height: '50px' },
+])
+```
+
+### Keyword Resolution
+
+When a value is solely one of the sizing keywords `auto`, `min-content`, `max-content`, `fit-content` or `stretch`, the library temporarily writes the keyword to the element and reads the computed style back to resolve it into concrete px values.
+
+```vue
+<template>
+  <!-- Springs between the natural width and 100px -->
+  <spring.div :spring-style="{ width: expanded ? 'auto' : '100px' }"></spring.div>
+</template>
+```
+
+Keywords may also appear on both sides:
+
+```ts
+animate(el, [{ width: 'min-content' }, { width: 'max-content' }])
+```
+
+The resolved value is accepted only when all of its numbers are in px. When the browser does not resolve the keyword into px — for example, the element is not rendered, or the computed style keeps the keyword as is like `min-width` — the value stays non-numeric and the property snaps to the `to` style without animation.
+
+### Unit Mismatch Resolution
+
+When the units of `from` and `to` do not match and one side is px, the other side is converted to px by temporarily writing it to the element and reading the computed style back.
+
+```ts
+// 10rem is converted to px (e.g. 160px), then animated toward 300px.
+animate(el, [{ width: '10rem' }, { width: '300px' }])
+```
+
+The conversion only happens toward px. A mismatched pair without a px side is left as is and the numbers are interpolated in the `to` side's unit, which is usually not what you want (see [Spring Style Caveats](#spring-style-caveats)).
+
 ## `springValue` and `springComputed`
 
 `springValue` holds a number that lives inside an animating style. Assigning to its `target` automatically triggers an animation toward that value. Combined with the `sv` tagged template, it can be embedded inside a CSS value.
