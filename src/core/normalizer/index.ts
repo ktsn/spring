@@ -3,10 +3,11 @@ import { snapshotSpringStyle } from '../spring-value'
 import { ParsedStyleValue, parseStyleValue } from '../style'
 import { clearStyle, mapValues, readStyle, writeStyle } from '../utils'
 import { NormalizerRule } from './normalizer'
+import { keywordValueRule } from './rules/keyword-value'
 import { mismatchGeneralRule } from './rules/mismatch-general'
 import { zeroValueRule } from './rules/zero-value'
 
-const allRules: NormalizerRule[] = [zeroValueRule, mismatchGeneralRule]
+const allRules: NormalizerRule[] = [keywordValueRule, zeroValueRule, mismatchGeneralRule]
 
 /**
  * Convert raw user-provided `from` / `to` styles into pairs of numeric style
@@ -23,7 +24,10 @@ const allRules: NormalizerRule[] = [zeroValueRule, mismatchGeneralRule]
  * one side. For a side that is present in the raw input, the returned
  * `ParsedStyleValue` keeps the slot count and order that the input parses
  * to — callers rely on this to associate normalized slots with user-provided
- * spring values by index.
+ * spring values by index. The only exception is an input that parses to zero
+ * slots (a pure keyword value), which may gain slots through keyword
+ * resolution; such an input carries no user-provided spring values, so the
+ * index association is unaffected.
  *
  * @param el DOM element that will be animated
  * @param rawFrom raw `from` style for each css property

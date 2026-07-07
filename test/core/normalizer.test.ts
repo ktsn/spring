@@ -18,9 +18,9 @@ afterEach(() => {
 
 /**
  * Spy on `getComputedStyle` so that, for the given `target`, properties
- * listed in `overrides` report the overridden value. Custom property
- * overrides are served through `getPropertyValue`, others through direct
- * property access.
+ * listed in `overrides` report the overridden value. A function override is
+ * invoked on each read. Custom property overrides are served through
+ * `getPropertyValue`, others through direct property access.
  *
  * With `ifInlineCleared: true`, an override applies only while the inline
  * style for that property is cleared. Other properties (and other elements)
@@ -28,7 +28,7 @@ afterEach(() => {
  */
 function mockComputedStyles(
   target: HTMLElement,
-  overrides: Record<string, string>,
+  overrides: Record<string, string | (() => string)>,
   options: { ifInlineCleared?: boolean } = {},
 ): void {
   const real = globalThis.getComputedStyle
@@ -47,7 +47,8 @@ function mockComputedStyles(
       return undefined
     }
 
-    return overrides[key]
+    const override = overrides[key]
+    return typeof override === 'function' ? override() : override
   }
 
   const spy = vitest
@@ -294,6 +295,159 @@ describe('normalizeAnimationStyles', () => {
 
       // Skipped path also restores: empty inline stays empty.
       expect(target.style.transform).toBe('')
+    })
+  })
+
+  describe('keyword resolution', () => {
+    test('resolves a keyword `from` to px through computed style', () => {
+      const target = el()
+      mockComputedStyles(target, { width: '160px' })
+
+      const result = normalizeAnimationStyles(target, { width: 'auto' }, { width: '300px' })
+
+      expect(result).toEqual({
+        width: [
+          { values: [160], units: ['px'], wraps: ['', ''] },
+          { values: [300], units: ['px'], wraps: ['', ''] },
+        ],
+      })
+    })
+
+    test('resolves a keyword `to` to px through computed style', () => {
+      const target = el()
+      mockComputedStyles(target, { width: '160px' })
+
+      const result = normalizeAnimationStyles(target, { width: '300px' }, { width: 'auto' })
+
+      expect(result).toEqual({
+        width: [
+          { values: [300], units: ['px'], wraps: ['', ''] },
+          { values: [160], units: ['px'], wraps: ['', ''] },
+        ],
+      })
+    })
+
+    test('resolves keywords on both sides independently', () => {
+      const target = el()
+      let probeCount = 0
+      mockComputedStyles(target, {
+        width: () => (probeCount++ === 0 ? '80px' : '240px'),
+      })
+
+      const result = normalizeAnimationStyles(
+        target,
+        { width: 'min-content' },
+        { width: 'max-content' },
+      )
+
+      expect(result['width']?.[0]?.values).toEqual([80])
+      expect(result['width']?.[1]?.values).toEqual([240])
+      expect(result['width']?.[0]?.units).toEqual(['px'])
+      expect(result['width']?.[1]?.units).toEqual(['px'])
+    })
+
+    test.for(['auto', 'min-content', 'max-content', 'fit-content', 'stretch'])(
+      'resolves `%s`',
+      (keyword) => {
+        const target = el()
+        mockComputedStyles(target, { width: '120px' })
+
+        const result = normalizeAnimationStyles(target, { width: keyword }, { width: '300px' })
+
+        expect(result['width']?.[0]).toEqual({ values: [120], units: ['px'], wraps: ['', ''] })
+      },
+    )
+
+    test('leaves a keyword outside the resolvable set untouched', () => {
+      const target = el()
+      mockComputedStyles(target, { width: '120px' })
+
+      const result = normalizeAnimationStyles(target, { width: 'none' }, { width: '300px' })
+
+      expect(result['width']?.[0]).toEqual({ values: [], units: [], wraps: ['none'] })
+    })
+
+    test('keeps the keyword when computed style resolves to a non-px unit', () => {
+      const target = el()
+      mockComputedStyles(target, { width: '50%' })
+
+      const result = normalizeAnimationStyles(target, { width: 'auto' }, { width: '300px' })
+
+      expect(result['width']?.[0]).toEqual({ values: [], units: [], wraps: ['auto'] })
+    })
+
+    test('keeps the keyword when computed style echoes it back', () => {
+      const target = el()
+      mockComputedStyles(target, { width: 'auto' })
+
+      const result = normalizeAnimationStyles(target, { width: 'auto' }, { width: '300px' })
+
+      expect(result['width']?.[0]).toEqual({ values: [], units: [], wraps: ['auto'] })
+    })
+
+    test('accepts a multi-slot computed style when all slots are px', () => {
+      const target = el()
+      mockComputedStyles(target, { margin: '0px 150px' })
+
+      const result = normalizeAnimationStyles(target, { margin: 'auto' }, { margin: '0px 0px' })
+
+      expect(result['margin']?.[0]).toEqual({
+        values: [0, 150],
+        units: ['px', 'px'],
+        wraps: ['', ' ', ''],
+      })
+    })
+
+    test('rejects a multi-slot computed style when some slot is not px', () => {
+      const target = el()
+      mockComputedStyles(target, { margin: '0px 50%' })
+
+      const result = normalizeAnimationStyles(target, { margin: 'auto' }, { margin: '0px 0px' })
+
+      expect(result['margin']?.[0]).toEqual({ values: [], units: [], wraps: ['auto'] })
+    })
+
+    test('does not resolve a keyword embedded in a larger value', () => {
+      const target = el()
+      mockComputedStyles(target, { margin: '10px 150px' })
+
+      const result = normalizeAnimationStyles(
+        target,
+        { margin: '10px auto' },
+        { margin: '20px 30px' },
+      )
+
+      expect(result['margin']?.[0]?.values).toEqual([10])
+      expect(result['margin']?.[0]?.wraps).toEqual(['', ' auto'])
+    })
+
+    test('completes a zero counterpart unit from the resolved keyword', () => {
+      const target = el()
+      mockComputedStyles(target, { width: '160px' })
+
+      const result = normalizeAnimationStyles(target, { width: 'auto' }, { width: 0 })
+
+      expect(result['width']?.[0]).toEqual({ values: [160], units: ['px'], wraps: ['', ''] })
+      expect(result['width']?.[1]).toEqual({ values: [0], units: ['px'], wraps: ['', ''] })
+    })
+
+    test('restores a pre-existing inline value after the keyword probe', () => {
+      const target = el()
+      target.style.width = '50px'
+      mockComputedStyles(target, { width: '160px' })
+
+      normalizeAnimationStyles(target, { width: 'auto' }, { width: '300px' })
+
+      expect(target.style.width).toBe('50px')
+    })
+
+    test('clears the inline value after the keyword probe when it was empty before', () => {
+      const target = el()
+      mockComputedStyles(target, { width: '160px' })
+
+      normalizeAnimationStyles(target, { width: 'auto' }, { width: '300px' })
+
+      expect(target.style.width).toBe('')
     })
   })
 })
