@@ -1,53 +1,50 @@
-import { interpolateParsedStyle, ParsedStyleValue, parseStyleValue } from '../../style'
-import { clearStyle, readStyle, writeStyle, zip } from '../../utils'
-import { NormalizerRule } from '../normalizer'
+import { interpolateParsedStyle, parseStyleValue } from '../../style'
+import { zip } from '../../utils'
+import { matchedIndexes, NormalizerRule, probeComputedValue } from '../normalizer'
 
 /**
  * Read real computed style from animation target when input units are mismatched.
  * Use the numeric value from real style if it has the same structure and unit
  * with the counterpart.
  */
-export const mismatchGeneralRule: NormalizerRule<ParsedStyleValue | undefined> = {
-  check: ({ target, counterpart }) => target.unit !== counterpart.unit && counterpart.unit === 'px',
+export const mismatchGeneralRule: NormalizerRule = (el, key, target, counterpart) => {
+  const indexes = matchedIndexes(
+    target,
+    counterpart,
+    (t, c) => t.unit !== c.unit && c.unit === 'px',
+  )
 
-  prepare: (el, key, style) => {
-    const original = readStyle(el.style, key)
-    writeStyle(el, key, interpolateParsedStyle(style, style.values))
+  if (indexes.length === 0) {
+    return target
+  }
 
-    const computedStr = readStyle(getComputedStyle(el), key)
-    const computed = parseStyleValue(computedStr)
+  const computedStr = probeComputedValue(el, key, interpolateParsedStyle(target, target.values))
+  const computed = parseStyleValue(computedStr)
 
-    if (original === '') {
-      clearStyle(el, key)
-    } else {
-      writeStyle(el, key, original)
+  // Compare the structures between computed style and target style value.
+  // Do not accept computed style if the structures are mismatched.
+  if (computed.values.length !== target.values.length) return target
+  if (computed.wraps.length !== target.wraps.length) return target
+  const sameWraps = zip(computed.wraps, target.wraps).every(([cw, tw]) => cw === tw)
+  if (!sameWraps) {
+    return target
+  }
+
+  const values = [...target.values]
+  const units = [...target.units]
+  for (const i of indexes) {
+    // Do not use computed style if the computed slot's unit does not match
+    // with counterpart.
+    if (computed.units[i] !== 'px') {
+      continue
     }
+    values[i] = computed.values[i]!
+    units[i] = computed.units[i]!
+  }
 
-    // Compare the structures between computed style and target style value.
-    // Do not accept computed style if the structures are mismatched.
-    if (computed.values.length !== style.values.length) return undefined
-    if (computed.wraps.length !== style.wraps.length) return undefined
-    const sameWraps = zip(computed.wraps, style.wraps).every(([rw, sw]) => rw === sw)
-    if (!sameWraps) {
-      return undefined
-    }
-
-    return computed
-  },
-
-  normalize: ({ target, index }, passed) => {
-    if (!passed) {
-      return target
-    }
-
-    // Do not use computed style if the target slot's unit matches with counterpart.
-    if (passed.units[index] !== 'px') {
-      return target
-    }
-
-    return {
-      value: passed.values[index]!,
-      unit: passed.units[index]!,
-    }
-  },
+  return {
+    ...target,
+    values,
+    units,
+  }
 }

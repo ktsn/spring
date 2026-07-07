@@ -108,186 +108,192 @@ describe('normalizeAnimationStyles', () => {
     })
   })
 
-  test('completes a zero value unit from its counterpart', () => {
-    const result = normalizeAnimationStyles(el(), { '--x': '100%' }, { '--x': 0 })
-    expect(result['--x']?.[0]?.units).toEqual(['%'])
-    expect(result['--x']?.[1]?.units).toEqual(['%'])
-    expect(result['--x']?.[1]?.values).toEqual([0])
-  })
+  describe('missing entry resolution', () => {
+    test('drops keys that are null or undefined on both sides', () => {
+      const result = normalizeAnimationStyles(el(), { width: null }, { width: undefined })
+      expect(result).toEqual({})
+    })
 
-  test('drops keys that are null or undefined on both sides', () => {
-    const result = normalizeAnimationStyles(el(), { width: null }, { width: undefined })
-    expect(result).toEqual({})
-  })
+    test('resolves entries missing on one side from computed style and restores inline overrides', () => {
+      const target = el()
+      target.style.setProperty('--from-only', '40px')
+      target.style.setProperty('--to-only', '60px')
 
-  test('resolves entries missing on one side from computed style and restores inline overrides', () => {
-    const target = el()
-    target.style.setProperty('--from-only', '40px')
-    target.style.setProperty('--to-only', '60px')
+      mockComputedStyles(
+        target,
+        {
+          '--from-only': '5px',
+          '--to-only': '7px',
+        },
+        { ifInlineCleared: true },
+      )
 
-    mockComputedStyles(
-      target,
-      {
-        '--from-only': '5px',
-        '--to-only': '7px',
-      },
-      { ifInlineCleared: true },
-    )
+      const result = normalizeAnimationStyles(
+        target,
+        { '--to-only': '60px' },
+        { '--from-only': '40px' },
+      )
 
-    const result = normalizeAnimationStyles(
-      target,
-      { '--to-only': '60px' },
-      { '--from-only': '40px' },
-    )
+      expect(result['--from-only']?.[0]?.values).toEqual([5])
+      expect(result['--from-only']?.[1]?.values).toEqual([40])
+      expect(result['--to-only']?.[0]?.values).toEqual([60])
+      expect(result['--to-only']?.[1]?.values).toEqual([7])
 
-    expect(result['--from-only']?.[0]?.values).toEqual([5])
-    expect(result['--from-only']?.[1]?.values).toEqual([40])
-    expect(result['--to-only']?.[0]?.values).toEqual([60])
-    expect(result['--to-only']?.[1]?.values).toEqual([7])
+      // Inline overrides are restored after resolution.
+      expect(target.style.getPropertyValue('--from-only')).toBe('40px')
+      expect(target.style.getPropertyValue('--to-only')).toBe('60px')
+    })
 
-    // Inline overrides are restored after resolution.
-    expect(target.style.getPropertyValue('--from-only')).toBe('40px')
-    expect(target.style.getPropertyValue('--to-only')).toBe('60px')
-  })
+    test('treats null / undefined entries as missing and resolves them from computed style', () => {
+      const target = el()
+      target.style.setProperty('--from-only', '40px')
+      target.style.setProperty('--to-only', '60px')
 
-  test('treats null / undefined entries as missing and resolves them from computed style', () => {
-    const target = el()
-    target.style.setProperty('--from-only', '40px')
-    target.style.setProperty('--to-only', '60px')
+      mockComputedStyles(
+        target,
+        {
+          '--from-only': '5px',
+          '--to-only': '7px',
+        },
+        { ifInlineCleared: true },
+      )
 
-    mockComputedStyles(
-      target,
-      {
-        '--from-only': '5px',
-        '--to-only': '7px',
-      },
-      { ifInlineCleared: true },
-    )
+      const result = normalizeAnimationStyles(
+        target,
+        { '--to-only': '60px', '--from-only': null },
+        { '--from-only': '40px', '--to-only': undefined },
+      )
 
-    const result = normalizeAnimationStyles(
-      target,
-      { '--to-only': '60px', '--from-only': null },
-      { '--from-only': '40px', '--to-only': undefined },
-    )
+      expect(result['--from-only']?.[0]?.values).toEqual([5])
+      expect(result['--from-only']?.[1]?.values).toEqual([40])
+      expect(result['--to-only']?.[0]?.values).toEqual([60])
+      expect(result['--to-only']?.[1]?.values).toEqual([7])
 
-    expect(result['--from-only']?.[0]?.values).toEqual([5])
-    expect(result['--from-only']?.[1]?.values).toEqual([40])
-    expect(result['--to-only']?.[0]?.values).toEqual([60])
-    expect(result['--to-only']?.[1]?.values).toEqual([7])
-
-    // Inline overrides are restored after resolution.
-    expect(target.style.getPropertyValue('--from-only')).toBe('40px')
-    expect(target.style.getPropertyValue('--to-only')).toBe('60px')
-  })
-
-  test('resolves a non-px `from` to px when `to` is px', () => {
-    const target = el()
-    mockComputedStyles(target, { width: '160px' })
-
-    const result = normalizeAnimationStyles(target, { width: '10rem' }, { width: '300px' })
-
-    expect(result).toEqual({
-      width: [
-        { values: [160], units: ['px'], wraps: ['', ''] },
-        { values: [300], units: ['px'], wraps: ['', ''] },
-      ],
+      // Inline overrides are restored after resolution.
+      expect(target.style.getPropertyValue('--from-only')).toBe('40px')
+      expect(target.style.getPropertyValue('--to-only')).toBe('60px')
     })
   })
 
-  test('resolves a non-px `to` to px when `from` is px', () => {
-    const target = el()
-    mockComputedStyles(target, { width: '160px' })
-
-    const result = normalizeAnimationStyles(target, { width: '300px' }, { width: '10rem' })
-
-    expect(result).toEqual({
-      width: [
-        { values: [300], units: ['px'], wraps: ['', ''] },
-        { values: [160], units: ['px'], wraps: ['', ''] },
-      ],
+  describe('zero value unit resolution', () => {
+    test('completes a zero value unit from its counterpart', () => {
+      const result = normalizeAnimationStyles(el(), { '--x': '100%' }, { '--x': 0 })
+      expect(result['--x']?.[0]?.units).toEqual(['%'])
+      expect(result['--x']?.[1]?.units).toEqual(['%'])
+      expect(result['--x']?.[1]?.values).toEqual([0])
     })
   })
 
-  test('resolves only the mixed-unit slot in a multi-slot value', () => {
-    const target = el()
-    mockComputedStyles(target, { padding: '10px 16px' })
+  describe('mismatch resolution', () => {
+    test('resolves a non-px `from` to px when `to` is px', () => {
+      const target = el()
+      mockComputedStyles(target, { width: '160px' })
 
-    const result = normalizeAnimationStyles(
-      target,
-      { padding: '10px 1rem' },
-      { padding: '20px 30px' },
-    )
+      const result = normalizeAnimationStyles(target, { width: '10rem' }, { width: '300px' })
 
-    expect(result['padding']?.[0]?.values).toEqual([10, 16])
-    expect(result['padding']?.[0]?.units).toEqual(['px', 'px'])
-    expect(result['padding']?.[1]?.values).toEqual([20, 30])
-  })
+      expect(result).toEqual({
+        width: [
+          { values: [160], units: ['px'], wraps: ['', ''] },
+          { values: [300], units: ['px'], wraps: ['', ''] },
+        ],
+      })
+    })
 
-  test('skips resolution when computed expands to a different wraps structure', () => {
-    const target = el()
-    mockComputedStyles(target, { transform: 'matrix(1, 0, 0, 1, 16, 0)' })
+    test('resolves a non-px `to` to px when `from` is px', () => {
+      const target = el()
+      mockComputedStyles(target, { width: '160px' })
 
-    const result = normalizeAnimationStyles(
-      target,
-      { transform: 'translate(1rem)' },
-      { transform: 'translate(100px)' },
-    )
+      const result = normalizeAnimationStyles(target, { width: '300px' }, { width: '10rem' })
 
-    expect(result['transform']?.[0]?.values).toEqual([1])
-    expect(result['transform']?.[0]?.units).toEqual(['rem'])
-    expect(result['transform']?.[1]?.values).toEqual([100])
-  })
+      expect(result).toEqual({
+        width: [
+          { values: [300], units: ['px'], wraps: ['', ''] },
+          { values: [160], units: ['px'], wraps: ['', ''] },
+        ],
+      })
+    })
 
-  test('skips resolution for custom properties (computed echoes the inline unit)', () => {
-    const result = normalizeAnimationStyles(el(), { '--x': '1rem' }, { '--x': '100px' })
+    test('resolves only the mixed-unit slot in a multi-slot value', () => {
+      const target = el()
+      mockComputedStyles(target, { padding: '10px 16px' })
 
-    expect(result['--x']?.[0]?.values).toEqual([1])
-    expect(result['--x']?.[0]?.units).toEqual(['rem'])
-    expect(result['--x']?.[1]?.values).toEqual([100])
-  })
+      const result = normalizeAnimationStyles(
+        target,
+        { padding: '10px 1rem' },
+        { padding: '20px 30px' },
+      )
 
-  test('leaves matching-unit and both-non-px pairs untouched', () => {
-    // getComputedStyle must not be invoked when there's nothing to resolve
-    // (no missing keys, no probe needed).
-    const spy = vitest.spyOn(globalThis, 'getComputedStyle')
-    activeSpies.push(spy)
+      expect(result['padding']?.[0]?.values).toEqual([10, 16])
+      expect(result['padding']?.[0]?.units).toEqual(['px', 'px'])
+      expect(result['padding']?.[1]?.values).toEqual([20, 30])
+    })
 
-    const result = normalizeAnimationStyles(
-      el(),
-      { width: '10px', height: '1em' },
-      { width: '50px', height: '5em' },
-    )
+    test('skips resolution when computed expands to a different wraps structure', () => {
+      const target = el()
+      mockComputedStyles(target, { transform: 'matrix(1, 0, 0, 1, 16, 0)' })
 
-    expect(spy).not.toHaveBeenCalled()
-    expect(result['width']?.[0]?.values).toEqual([10])
-    expect(result['width']?.[1]?.values).toEqual([50])
-    expect(result['height']?.[0]?.units).toEqual(['em'])
-    expect(result['height']?.[1]?.units).toEqual(['em'])
-  })
+      const result = normalizeAnimationStyles(
+        target,
+        { transform: 'translate(1rem)' },
+        { transform: 'translate(100px)' },
+      )
 
-  test('restores a pre-existing inline value after probing', () => {
-    const target = el()
-    target.style.width = '50px'
+      expect(result['transform']?.[0]?.values).toEqual([1])
+      expect(result['transform']?.[0]?.units).toEqual(['rem'])
+      expect(result['transform']?.[1]?.values).toEqual([100])
+    })
 
-    mockComputedStyles(target, { width: '160px' })
+    test('skips resolution for custom properties (computed echoes the inline unit)', () => {
+      const result = normalizeAnimationStyles(el(), { '--x': '1rem' }, { '--x': '100px' })
 
-    normalizeAnimationStyles(target, { width: '10rem' }, { width: '300px' })
+      expect(result['--x']?.[0]?.values).toEqual([1])
+      expect(result['--x']?.[0]?.units).toEqual(['rem'])
+      expect(result['--x']?.[1]?.values).toEqual([100])
+    })
 
-    expect(target.style.width).toBe('50px')
-  })
+    test('leaves matching-unit and both-non-px pairs untouched', () => {
+      // getComputedStyle must not be invoked when there's nothing to resolve
+      // (no missing keys, no probe needed).
+      const spy = vitest.spyOn(globalThis, 'getComputedStyle')
+      activeSpies.push(spy)
 
-  test('clears the inline value after probing when it was empty before', () => {
-    const target = el()
+      const result = normalizeAnimationStyles(
+        el(),
+        { width: '10px', height: '1em' },
+        { width: '50px', height: '5em' },
+      )
 
-    mockComputedStyles(target, { transform: 'matrix(1, 0, 0, 1, 16, 0)' })
+      expect(spy).not.toHaveBeenCalled()
+      expect(result['width']?.[0]?.values).toEqual([10])
+      expect(result['width']?.[1]?.values).toEqual([50])
+      expect(result['height']?.[0]?.units).toEqual(['em'])
+      expect(result['height']?.[1]?.units).toEqual(['em'])
+    })
 
-    normalizeAnimationStyles(
-      target,
-      { transform: 'translate(1rem)' },
-      { transform: 'translate(100px)' },
-    )
+    test('restores a pre-existing inline value after probing', () => {
+      const target = el()
+      target.style.width = '50px'
 
-    // Skipped path also restores: empty inline stays empty.
-    expect(target.style.transform).toBe('')
+      mockComputedStyles(target, { width: '160px' })
+
+      normalizeAnimationStyles(target, { width: '10rem' }, { width: '300px' })
+
+      expect(target.style.width).toBe('50px')
+    })
+
+    test('clears the inline value after probing when it was empty before', () => {
+      const target = el()
+
+      mockComputedStyles(target, { transform: 'matrix(1, 0, 0, 1, 16, 0)' })
+
+      normalizeAnimationStyles(
+        target,
+        { transform: 'translate(1rem)' },
+        { transform: 'translate(100px)' },
+      )
+
+      // Skipped path also restores: empty inline stays empty.
+      expect(target.style.transform).toBe('')
+    })
   })
 })
