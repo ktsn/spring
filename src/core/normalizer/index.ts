@@ -1,12 +1,13 @@
 import { AnimateValue, AnimationTarget } from '../animate'
 import { snapshotSpringStyle } from '../spring-value'
 import { ParsedStyleValue, parseStyleValue } from '../style'
-import { clearStyle, mapValues, readStyle, writeStyle, zip } from '../utils'
-import { NormalizerContext, NormalizerRule } from './normalizer'
+import { clearStyle, mapValues, readStyle, writeStyle } from '../utils'
+import { NormalizerRule } from './normalizer'
+import { keywordValueRule } from './rules/keyword-value'
 import { mismatchGeneralRule } from './rules/mismatch-general'
 import { zeroValueRule } from './rules/zero-value'
 
-const allRules = [zeroValueRule, mismatchGeneralRule]
+const allRules: NormalizerRule[] = [keywordValueRule, zeroValueRule, mismatchGeneralRule]
 
 /**
  * Convert raw user-provided `from` / `to` styles into pairs of numeric style
@@ -23,7 +24,10 @@ const allRules = [zeroValueRule, mismatchGeneralRule]
  * one side. For a side that is present in the raw input, the returned
  * `ParsedStyleValue` keeps the slot count and order that the input parses
  * to — callers rely on this to associate normalized slots with user-provided
- * spring values by index.
+ * spring values by index. The only exception is an input that parses to zero
+ * slots (a pure keyword value), which may gain slots through keyword
+ * resolution; such an input carries no user-provided spring values, so the
+ * index association is unaffected.
  *
  * @param el DOM element that will be animated
  * @param rawFrom raw `from` style for each css property
@@ -45,8 +49,8 @@ export function normalizeAnimationStyles(
   return mapValues(parsedFromTo, ([from, to], key): [ParsedStyleValue, ParsedStyleValue] => {
     return allRules.reduce(
       ([accFrom, accTo], rule): [ParsedStyleValue, ParsedStyleValue] => [
-        normalizeWithRule(el, accFrom, accTo, key, rule),
-        normalizeWithRule(el, accTo, accFrom, key, rule),
+        rule(el, key, accFrom, accTo),
+        rule(el, key, accTo, accFrom),
       ],
       [from, to],
     )
@@ -117,57 +121,4 @@ function withClearedInlineStyles(
       writeStyle(target, key, value)
     }
   }
-}
-
-function normalizeWithRule(
-  el: AnimationTarget,
-  target: ParsedStyleValue,
-  counterpart: ParsedStyleValue,
-  key: string,
-  rule: NormalizerRule<any>,
-): ParsedStyleValue {
-  const contexts = zip(
-    zip(target.values, target.units),
-    zip(counterpart.values, counterpart.units),
-  ).map(([[tv, tu], [cv, cu]], index): NormalizerContext => {
-    return {
-      target: {
-        value: tv,
-        unit: tu,
-      },
-      counterpart: {
-        value: cv,
-        unit: cu,
-      },
-      key,
-      index,
-    }
-  })
-
-  const matchedIndexes = new Set<number>()
-
-  for (const ctx of contexts) {
-    if (rule.check(ctx)) {
-      matchedIndexes.add(ctx.index)
-    }
-  }
-
-  if (matchedIndexes.size === 0) {
-    return target
-  }
-
-  const passed = rule.prepare?.(el, key, target)
-  const normalized = {
-    ...target,
-    values: [...target.values],
-    units: [...target.units],
-  }
-
-  for (const ctx of contexts.filter((c) => matchedIndexes.has(c.index))) {
-    const { value, unit } = rule.normalize(ctx, passed)
-    normalized.values[ctx.index] = value
-    normalized.units[ctx.index] = unit
-  }
-
-  return normalized
 }
