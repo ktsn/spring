@@ -47,7 +47,7 @@
     "prepare": "vp config"
   },
   "devDependencies": {
-    "@types/node": "25.9.4",
+    "@types/node": "25.9.5",
     "@vitejs/plugin-vue": "6.0.7",
     "conventional-changelog": "8.0.1",
     "conventional-changelog-angular": "9.2.1",
