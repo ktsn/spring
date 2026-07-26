@@ -11,7 +11,7 @@ catalogs:
       version: 0.2.5
 
 overrides:
-  vite: npm:@voidzero-dev/vite-plus-core@0.2.5
+  vite: npm:@voidzero-dev/vite-plus-core@0.2.6
 
 importers:
 
