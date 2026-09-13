@@ -185,6 +185,126 @@ describe('normalizeAnimationStyles', () => {
     })
   })
 
+  describe('translate percentages', () => {
+    test('resolves a percentage from component to px through a transform matrix', () => {
+      const target = el()
+      mockComputedStyles(target, {
+        transform: () => {
+          expect(target.style.transform).toBe('translate(50%)')
+          return 'matrix(1, 0, 0, 1, 160, 0)'
+        },
+      })
+
+      const result = normalizeAnimationStyles(target, { translate: '50%' }, { translate: '100px' })
+
+      expect(result.translate?.[0]).toEqual({
+        values: [160],
+        units: ['px'],
+        wraps: ['', ''],
+      })
+      expect(result.translate?.[1]).toEqual({
+        values: [100],
+        units: ['px'],
+        wraps: ['', ''],
+      })
+    })
+
+    test('resolves a percentage to component to px', () => {
+      const target = el()
+      mockComputedStyles(target, {
+        transform: 'matrix(1, 0, 0, 1, 80, 0)',
+      })
+
+      const result = normalizeAnimationStyles(target, { translate: '100px' }, { translate: '25%' })
+
+      expect(result.translate?.[0]?.values).toEqual([100])
+      expect(result.translate?.[1]?.values).toEqual([80])
+      expect(result.translate?.[1]?.units).toEqual(['px'])
+    })
+
+    test('resolves crossed percentage components independently', () => {
+      const target = el()
+      mockComputedStyles(target, {
+        transform: () => {
+          if (target.style.transform === 'translate(50%, 20px)') {
+            return 'matrix(1, 0, 0, 1, 160, 20)'
+          }
+          if (target.style.transform === 'translate(100px, 25%)') {
+            return 'matrix(1, 0, 0, 1, 100, 60)'
+          }
+          return 'none'
+        },
+      })
+
+      const result = normalizeAnimationStyles(
+        target,
+        { translate: '50% 20px' },
+        { translate: '100px 25%' },
+      )
+
+      expect(result.translate?.[0]?.values).toEqual([160, 20])
+      expect(result.translate?.[0]?.units).toEqual(['px', 'px'])
+      expect(result.translate?.[1]?.values).toEqual([100, 60])
+      expect(result.translate?.[1]?.units).toEqual(['px', 'px'])
+    })
+
+    test('reads xyz translation from a matrix3d serialization', () => {
+      const target = el()
+      mockComputedStyles(target, {
+        transform: () => {
+          expect(target.style.transform).toBe('translate3d(50%, 25%, 10px)')
+          return 'matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 160, 60, 10, 1)'
+        },
+      })
+
+      const result = normalizeAnimationStyles(
+        target,
+        { translate: '50% 25% 10px' },
+        { translate: '100px 100px 20px' },
+      )
+
+      expect(result.translate?.[0]?.values).toEqual([160, 60, 10])
+      expect(result.translate?.[0]?.units).toEqual(['px', 'px', 'px'])
+    })
+
+    test('restores the previous inline transform value and priority', () => {
+      const target = el()
+      target.style.setProperty('transform', 'rotate(10deg)', 'important')
+      mockComputedStyles(target, {
+        transform: 'matrix(1, 0, 0, 1, 160, 0)',
+      })
+
+      normalizeAnimationStyles(target, { translate: '50%' }, { translate: '100px' })
+
+      expect(target.style.transform).toBe('rotate(10deg)')
+      expect(target.style.getPropertyPriority('transform')).toBe('important')
+    })
+
+    test('skips compound expressions whose numeric slots do not map to axes', () => {
+      const target = el()
+
+      const result = normalizeAnimationStyles(
+        target,
+        { translate: 'calc(50% + 10px)' },
+        { translate: '100px' },
+      )
+
+      expect(result.translate?.[0]?.values).toEqual([50, 10])
+      expect(result.translate?.[0]?.units).toEqual(['%', 'px'])
+    })
+
+    test('keeps the authored percentage when matrix serialization is unavailable', () => {
+      const target = el()
+      mockComputedStyles(target, { transform: 'none' })
+
+      const result = normalizeAnimationStyles(target, { translate: '50%' }, { translate: '100px' })
+
+      expect(result.translate?.[0]?.values).toEqual([50])
+      expect(result.translate?.[0]?.units).toEqual(['%'])
+      expect(target.style.transform).toBe('')
+    })
+  })
+
   describe('mismatch resolution', () => {
     test('resolves a non-px `from` to px when `to` is px', () => {
       const target = el()
