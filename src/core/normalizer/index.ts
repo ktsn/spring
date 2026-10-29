@@ -5,9 +5,15 @@ import { clearStyle, mapValues, readStyle, writeStyle } from '../utils'
 import { NormalizerRule } from './normalizer'
 import { keywordValueRule } from './rules/keyword-value'
 import { mismatchGeneralRule } from './rules/mismatch-general'
+import { translatePercentageRule } from './rules/translate-percentage'
 import { zeroValueRule } from './rules/zero-value'
 
-const allRules: NormalizerRule[] = [keywordValueRule, zeroValueRule, mismatchGeneralRule]
+const allRules: NormalizerRule[] = [
+  keywordValueRule,
+  zeroValueRule,
+  translatePercentageRule,
+  mismatchGeneralRule,
+]
 
 /**
  * Convert raw user-provided `from` / `to` styles into pairs of numeric style
